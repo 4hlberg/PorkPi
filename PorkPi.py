@@ -19,26 +19,11 @@ import datetime
 
 import os
 
-import gspread
-
 import Adafruit_DHT
 
 import RPi.GPIO as GPIO
 
-from oauth2client.client import SignedJwtAssertionCredentials
-
-import smtplib
-
-from email.MIMEMultipart import MIMEMultipart
-
-from email.MIMEText import MIMEText
-
 import requests
-
-
-#Google Sheet Authentication
-GDOCS_OAUTH_JSON       = 'your_credentials.json'
-GDOCS_SPREADSHEET_NAME = 'your_spreadsheet_name'
 
 
 # binary controls
@@ -150,10 +135,9 @@ CIRC_FAN_DUTY = 0				# seconds to stay on. Read from spreadhseet
 CIRC_FAN_IDLE_TIME = 0			# seconds to stay off. Read from spreadhseet
 
 
-PANIC_HOT = 100					#exit if temp too high or too low
-PANIC_COLD = 38
+PANIC_HOT = 25					#exit if temp too high or too low
+PANIC_COLD = 3
 
-LOGIN_SESSION_TIME = 2700 		#login again every X seconds (2700 = 45 mins)
 
 SOFTDOG_FILE = "/home/pi/PorkPi/PorkPi.softdog"
 
@@ -168,48 +152,12 @@ def touch(fname):
     else:
         open(fname, 'a').close()
 
-		
-
-# #######################################################################################
-#   Login to Google Sheets
-# #######################################################################################
-
-	
-def login_open_sheet(oauth_key_file, spreadsheet):
-	try:
-		json_key = json.load(open(oauth_key_file))
-		credentials = SignedJwtAssertionCredentials(json_key['client_email'], 
-													json_key['private_key'], 
-													['https://spreadsheets.google.com/feeds'])
-		gc = gspread.authorize(credentials)
-		
-		dash = gc.open(spreadsheet).worksheet("Dashboard")
-		
-		database = gc.open(spreadsheet).worksheet("db")
-		
-		
-		
-		params = gc.open(spreadsheet).worksheet("Params")
-				
-		return(dash, database, params, credentials)
-		
-	except Exception as ex:
-		sys.stderr.write("Unable to login and get spreadsheet.  Check OAuth credentials, spreadsheet name, and make sure spreadsheet is shared to the client_email address in the OAuth .json file!\n")
-		sys.stderr.flush()
-		
-		print("Google sheet login failed with error:", ex)
-		
-		sys.stderr.write("Google sheet login failed\n")
-		sys.stderr.flush()
-		
-		sys.exit(1)
-
 			
 # #######################################################################################
 #   Get Sensor Data
 # #######################################################################################
 
-def GetSensorData(my_sensor,my_pin, myfile1, myfile2, myfile3, myfile4):
+def GetSensorData(my_sensor,my_pin):
 
 	
 	chamber_humidity, chamber_temperature = Adafruit_DHT.read_retry(my_sensor, my_pin)
@@ -217,46 +165,23 @@ def GetSensorData(my_sensor,my_pin, myfile1, myfile2, myfile3, myfile4):
 	if chamber_humidity is None and chamber_temperature is None:
 		sys.stderr.write("Failed to get reading from DH22 - forcing 55F and 75%\n")
 		
-		chamber_humidity = 75
+		chamber_humidity = 80
 		 
-		chamber_temperature = 55
+		chamber_temperature = 10
 						
 		last_sensor_read_time = datetime.datetime.now()
 	else:
 		chamber_humidity = int(chamber_humidity) 
 		
-		chamber_temperature = int((chamber_temperature)*1.8)+32 # convert to F
+		chamber_temperature = int(chamber_temperature) # convert to F
 						
 		last_sensor_read_time = datetime.datetime.now()
 		
-		#Get Weights from file written to by HX711 program
-	if  os.path.isfile('LoadCell_LockFile'):
-		print("LoadCell_LockFile - skipping read")
-		hook1_weight_now = -1
-		hook2_weight_now = -1
-		hook3_weight_now = -1
-		hook4_weight_now = -1
-	
-	else:
-		myfile1.seek(0, 0);
-		myfile2.seek(0, 0);
-		myfile3.seek(0, 0);
-		myfile4.seek(0, 0);
-
-		
-		
-		hook1_weight_now = int(myfile1.read())
-		hook2_weight_now = int(myfile2.read())
-		hook3_weight_now = int(myfile3.read())
-		hook4_weight_now = int(myfile4.read())
-		
-		
-	
-	return(last_sensor_read_time,chamber_temperature,chamber_humidity,hook1_weight_now, hook2_weight_now, hook3_weight_now, hook4_weight_now)
+	return(last_sensor_read_time,chamber_temperature,chamber_humidity)
 
 
 # #######################################################################################
-#   Read Data From Sheet
+#   Read Data From Sheet REWRITE TO DATABASE
 # #######################################################################################
 
 def ReadDataFromSheet(dash, database, params):
@@ -307,34 +232,6 @@ def ReadDataFromSheet(dash, database, params):
 			local_HUMIDITY_IDLE_TIME = int(params.acell(HUMIDITY_IDLE_TIME_CELL).value)
 		
 			
-		except gspread.GSpreadException:
-		
-			sys.stderr.write("Gspread error in ReadDataFromSheet  - logging in again\n")
-			sys.stderr.flush()
-			
-			time.sleep(10) 	
-			
-			dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
-		
-		
-		except requests.exceptions.SSLError:
-			sys.stderr.write("Gspread error in ReadDataFromSheet SSLERROR- logging in again\n")
-			sys.stderr.flush()
-		
-			time.sleep(10) 	
-
-			dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
-		
-		except requests.exceptions.ConnectionError:
-			sys.stderr.write("Gspread error in ReadDataFromSheet ConnectionError - logging in again\n")
-			sys.stderr.flush()
-		
-			time.sleep(10) 	
-
-			dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)	
-		else:
-			KeepTrying = False
-
 	return(local_initialise, local_refreshsettings, local_chamber_setpoint_temp, \
 	local_chamber_setpoint_rh,local_last_row_written,local_sleep_seconds, local_TEMPERATURE_ERROR_UPPER, local_TEMPERATURE_ERROR_LOWER, local_HUMIDITY_ERROR_UPPER,\
 	local_HUMIDITY_ERROR_LOWER, local_TEMPERATURE_DELTA_TO_COOL, local_TEMPERATURE_DELTA_TO_HEAT, local_TEMPERATURE_CONTROL, local_HUMIDITY_CONTROL, local_HUMIDITY_DELTA_TO_HUMIDIFY,\
@@ -342,7 +239,7 @@ def ReadDataFromSheet(dash, database, params):
 	
 	
 # ######################################################################################
-#   Write Data To Sheet
+#   Write Data To Sheet REWRITE TO DATABASE
 # ######################################################################################
 
 def WriteDataToSheet(dash,database,row_count,last_sensor_read_time,chamber_temperature,chamber_humidity,hook1_weight_now, hook2_weight_now, hook3_weight_now, hook4_weight_now,cool_status, heat_status,humidifier_status,dehumidifier_status, air_pump_status,circ_fan_status):
@@ -371,35 +268,6 @@ def WriteDataToSheet(dash,database,row_count,last_sensor_read_time,chamber_tempe
 	
 			# Update in batch
 			database.update_cells(cell_list)
-			
-		except gspread.GSpreadException:
-		
-			sys.stderr.write("Gspread error in WriteDataToSheet  - logging in again\n")
-			sys.stderr.flush()
-			
-			time.sleep(10) 	
-			
-			dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
-			
-						
-		except requests.exceptions.SSLError:
-			sys.stderr.write("Gspread error in WriteDataToSheet SSLERROR- logging in again\n")
-			sys.stderr.flush()
-		
-			time.sleep(10) 	
-
-			dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
-			
-		except requests.exceptions.ConnectionError:
-			sys.stderr.write("Gspread error in WriteDataToSheet ConnectionError - logging in again\n")
-			sys.stderr.flush()
-			
-			time.sleep(10) 	
-
-			dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
-			
-		else:
-			KeepTrying = False
 
 		
 # #######################################################################################
@@ -413,12 +281,6 @@ def UpdateDevice(device,setting):
 		GPIO.output(device, GPIO.LOW) # Low is on
 	if(setting == OFF):
 		GPIO.output(device, GPIO.HIGH) #High is off
-		
-	if device == HEAT_PIN and setting == ON :
-		print colored("Heater On :  " + time.strftime("%c"), "red")
-		
-	if device == HEAT_PIN and setting == OFF :
-		print colored("Heater Off :  " + time.strftime("%c"), "red")
 		
 	if device == COOL_PIN and setting == ON :
 		print colored("Cooler On :  " + time.strftime("%c"), "cyan")
@@ -437,12 +299,6 @@ def UpdateDevice(device,setting):
 		
 	if device == HUMIDIFIER_PIN and setting == OFF :
 		print colored("Humidifier OFF :  " + time.strftime("%c"), "white")		
-		
-	if device == AIR_PUMP_PIN and setting == ON :
-		print colored("Air Pump ON :  " + time.strftime("%c"), "magenta")
-		
-	if device == AIR_PUMP_PIN and setting == OFF :
-		print colored("Air Pump OFF :  " + time.strftime("%c"), "magenta")		
 
 	return(time.time())
 	
@@ -459,35 +315,6 @@ def CompressDb(database):
 			
 	print("done")
 		
-# #######################################################################################
-#   initialise sheet
-# #######################################################################################
-
-def InitialiseSheet(dash, database):
-
-	print("INITIALISE")
-	
-	try:
-		# Set row counter
-		database.update_acell(LAST_ROW_WRITTEN_CELL,OUTPUT_START_ROW)
-			
-		# Flip initialise to 'N'
-		dash.update_acell(INITIALISE_CELL,"N")
-		
-		# Write session start time to Sheet
-		start_time_this_control_session = datetime.datetime.now()
-
-		dash.update_acell(START_TIME_THIS_CURE_CELL,start_time_this_control_session)
-	
-	except gspread.GSpreadException:
-		
-		sys.stderr.write("Gspread error in InitialiseSheet - logging in again\n")
-		sys.stderr.flush()
-		
-		time.sleep(10) 	
-
-		dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
-	
 # #######################################################################################
 #    InitRelays - setup the output pins
 # #######################################################################################
@@ -525,18 +352,6 @@ except socket.error, e:
 current_time_this_cure = datetime.datetime.now()	
 print("Starting PorkPi at " + time.strftime("%c"))
 
-#open Load Cell Files
-
-load_cell_1_file = open("LoadCell_1")
-load_cell_2_file = open("LoadCell_2")
-load_cell_3_file = open("LoadCell_3")
-load_cell_4_file = open("LoadCell_4")
-
-last_hook1_weight_now = 0
-last_hook2_weight_now = 0
-last_hook3_weight_now = 0
-last_hook4_weight_now = 0
-
 #Initialise Sensor
 sensor = Adafruit_DHT.DHT22
 pin = DHT22_PIN
@@ -551,19 +366,13 @@ last_heat_time = UpdateDevice(HEAT_PIN, OFF)
 last_humid_time = UpdateDevice(HUMIDIFIER_PIN, OFF)
 last_circ_time = UpdateDevice(CIRC_FAN_PIN, OFF)
 
-last_air_pump_off_time = UpdateDevice(AIR_PUMP_PIN, OFF)
-last_air_pump_on_time = last_air_pump_off_time
-
 last_circ_off_time = last_circ_time
 last_circ_on_time = last_circ_time
-
 
 cool_status  = OFF
 heat_status  = OFF
 humidifier_status = OFF
-dehumidifier_status = OFF
 circ_fan_status = OFF
-air_pump_status = OFF
 
 # Login to Google Sheets
 dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
@@ -578,30 +387,10 @@ CIRC_FAN_DUTY, CIRC_FAN_IDLE_TIME, AIR_PUMP_DUTY, AIR_PUMP_IDLE_TIME, HUMIDIFIER
 
 
 #Read Sensors
-last_sensor_read_time,chamber_temperature,chamber_humidity,hook1_weight_now, hook2_weight_now, hook3_weight_now, hook4_weight_now = GetSensorData(sensor,pin, load_cell_1_file,load_cell_2_file,load_cell_3_file,load_cell_4_file)
+last_sensor_read_time,chamber_temperature,chamber_humidity = GetSensorData(sensor,pin)
 		
 last_chamber_temperature = chamber_temperature
 last_chamber_humidity = chamber_humidity
-
-if hook1_weight_now >0:
-	last_hook1_weight_now = hook1_weight_now
-else: hook1_weight_now = last_hook1_weight_now
-
-if hook2_weight_now >0:
-	last_hook2_weight_now = hook2_weight_now
-else: hook2_weight_now = last_hook2_weight_now
-	
-if hook3_weight_now >0:
-	last_hook3_weight_now = hook3_weight_now
-else: hook3_weight_now = last_hook3_weight_now
-
-if hook4_weight_now >0:
-	last_hook4_weight_now = hook4_weight_now
-else: hook4_weight_now = last_hook4_weight_now
-
-
-#Cast row count read from sheet to integer
-row_count=int(last_row_written)
 
 #write for the first time
 WriteDataToSheet(dash,database,row_count,last_sensor_read_time,chamber_temperature,chamber_humidity,hook1_weight_now, hook2_weight_now, hook3_weight_now, hook4_weight_now, cool_status, heat_status,humidifier_status, dehumidifier_status, air_pump_status,circ_fan_status )
@@ -627,8 +416,6 @@ state_change = 1 #make sure status gets written
 last_uptime = time.time()
 
 
-
-
 print("Main")
 
 while True:
@@ -650,11 +437,6 @@ while True:
 			
 		dash.update_acell(UPTIME_CELL,current_uptime)
 			
-		if credentials.access_token_expired:
-			# refreshes the token, although does not seem to stop google sheets logging out hourly
-			dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
-			print colored("Token expired - logging in again", "red")
-
 		if dash is None:
 			dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
 			print colored("Workseet is NONE - logging in again", "red")
@@ -688,8 +470,7 @@ while True:
 			
 		#Read setpoints (separate from refresh above to reduce reads) - need this now we have temp/rh schedule built in, otherwise never checks setpoint
 		
-		chamber_setpoint_temp = int(dash.acell(CHAMBER_SETPOINT_TEMP_CELL).value)
-		chamber_setpoint_rh = int(dash.acell(CHAMBER_SETPOINT_RH_CELL).value)
+		chamber_setpoint_temp = int(dash.acell(CHAMBER_SETPOINT_T.value)
 		
 		 
 		#Read Sensors
@@ -714,24 +495,7 @@ while True:
 				#Shutdown and exit
 				GPIO.cleanup()
 				sys.exit (0)
-	
-		if hook1_weight_now >-1:
-			last_hook1_weight_now = hook1_weight_now
-		else: hook1_weight_now = last_hook1_weight_now
 
-		if hook2_weight_now >1:
-			last_hook2_weight_now = hook2_weight_now
-		else: hook2_weight_now = last_hook2_weight_now
-			
-		if hook3_weight_now >-1:
-			last_hook3_weight_now = hook3_weight_now
-		else: hook3_weight_now = last_hook3_weight_now
-
-		if hook4_weight_now >-1:
-			last_hook4_weight_now = hook4_weight_now
-		else: hook4_weight_now = last_hook4_weight_now
-			
-			
 	#Cycle the circulation fan
 		
 		if circ_fan_status == OFF :
@@ -751,25 +515,7 @@ while True:
 				circ_fan_status = OFF
 				state_change = 1
 	
-	#Cycle the air pump
-			
-		if air_pump_status == OFF :
-			if(time.time() - last_air_pump_off_time > AIR_PUMP_IDLE_TIME):
-				last_air_pump_on_time = UpdateDevice(AIR_PUMP_PIN,ON)
-				air_pump_status = ON	
-				state_change = 1
-				
-				if AIR_PUMP_DUTY < sleep_seconds:  # allow for short circ fan duties
-					print("Wait for air pump...", AIR_PUMP_DUTY, AIR_PUMP_IDLE_TIME)
-					time.sleep(float(AIR_PUMP_DUTY))
-					
-		if air_pump_status == ON:
-			if(time.time() - last_air_pump_on_time > AIR_PUMP_DUTY):
-				last_air_pump_off_time = UpdateDevice(AIR_PUMP_PIN,OFF)
-				air_pump_status = OFF
-				state_change = 1
 	
-		
 		# #########################				
 		# TEMPERATURE CONTROL LOGIC
 		# #########################
@@ -799,19 +545,14 @@ while True:
 		if (chamber_temperature <= (chamber_setpoint_temp - TEMPERATURE_ERROR_LOWER ) and chamber_temperature > chamber_setpoint_temp - TEMPERATURE_DELTA_TO_HEAT): 
 																							#Heat setpoint - acceptable error exceeded .. mainly to avoid overshoot
 																							#but allow to drift down a little if dehumidifier is on
-			if dehumidifier_status == OFF:
-				
-				if cool_status == ON:
+	
+			if cool_status == ON:
 				
 					last_cool_time = UpdateDevice(COOL_PIN, OFF)
 					cool_status = OFF
 					state_change = 1
 				
-			if dehumidifier_status == ON and heat_status == OFF:
-				
-					last_heat_time = UpdateDevice(HEAT_PIN,ON)
-					heat_status = ON
-
+		
 		if(chamber_temperature <= chamber_setpoint_temp - TEMPERATURE_DELTA_TO_HEAT):	# Heat setpoint significantly exceeded so active heat and turn off cooling
 			if(time.time() - last_heat_time > HEAT_IDLE_TIME): 
 					
@@ -915,57 +656,9 @@ while True:
 			dash.update_acell(LAST_SENSOR_READ_TIME_CELL,last_sensor_read_time)
 			
 		last_chamber_temperature = chamber_temperature
-		last_chamber_humidity = chamber_humidity
-		
-		if hook1_weight_now != -1:
-			last_hook1_weight_now = hook1_weight_now
-		else: hook1_weight_now = last_hook1_weight_now
-
-		if hook2_weight_now != -1:
-			last_hook2_weight_now = hook2_weight_now
-		else: hook2_weight_now = last_hook2_weight_now
-			
-		if hook3_weight_now != -1:
-			last_hook3_weight_now = hook3_weight_now
-		else: hook3_weight_now = last_hook3_weight_now
-
-		if hook4_weight_now != -1:
-			last_hook4_weight_now = hook4_weight_now
-		else: hook4_weight_now = last_hook4_weight_now
-		
-	
-				
+		last_chamber_humidity = chamber_humidity				
 		
 		time.sleep(float(sleep_seconds))
-
-	
-	
-	except gspread.GSpreadException:
-		
-		sys.stderr.write("Gspread error in main loop gspread.GSpreadException - logging in again\n")
-		sys.stderr.flush()
-		
-		time.sleep(10) 	
-
-		dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
-	
-	
-	except requests.exceptions.SSLError:
-		sys.stderr.write("Gspread error in main loop SSLERROR- logging in again\n")
-		sys.stderr.flush()
-		
-		time.sleep(10) 	
-
-		dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
-
-	
-	except requests.exceptions.ConnectionError:
-		sys.stderr.write("Gspread error in main loop ConnectionError - logging in again\n")
-		sys.stderr.flush()
-		
-		time.sleep(10) 	
-
-		dash, database, params, credentials = login_open_sheet(GDOCS_OAUTH_JSON, GDOCS_SPREADSHEET_NAME)
 	
 	except KeyboardInterrupt:
 	
@@ -976,7 +669,6 @@ while True:
 		last_cool_time = UpdateDevice(COOL_PIN, OFF)
 		last_heat_time = UpdateDevice(HEAT_PIN, OFF)
 		last_humid_time = UpdateDevice(HUMIDIFIER_PIN, OFF)
-		last_air_pump_off_time = UpdateDevice(AIR_PUMP_PIN, OFF)
 		last_circ_time = UpdateDevice(CIRC_FAN_PIN, OFF)
 
 		# Reset GPIO settings
